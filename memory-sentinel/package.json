@@ -3,7 +3,7 @@
   "name": "memory-sentinel",
   "title": "Memory Sentinel",
   "description": "Monitor process memory usage and send alerts when apps cross configured thresholds.",
-  "icon": "assets/icon.png",
+  "icon": "icon.png",
   "author": "naranjax",
   "platforms": ["macOS"],
   "categories": ["Productivity", "System"],
