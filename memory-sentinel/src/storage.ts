@@ -1,10 +1,11 @@
 import { LocalStorage } from "@raycast/api";
 
-import type { NotificationState, ScanResult, ThresholdRule } from "./types";
+import type { NotificationState, ScanResult, SetupState, ThresholdRule } from "./types";
 
 const RULES_STORAGE_KEY = "memory-sentinel.rules";
 const LAST_SCAN_STORAGE_KEY = "memory-sentinel.last-scan";
 const NOTIFICATION_STATE_STORAGE_KEY = "memory-sentinel.notification-state";
+const SETUP_STATE_STORAGE_KEY = "memory-sentinel.setup-state";
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
   const raw = await LocalStorage.getItem<string>(key);
@@ -44,4 +45,20 @@ export async function getNotificationState(): Promise<NotificationState> {
 
 export async function saveNotificationState(state: NotificationState): Promise<void> {
   await LocalStorage.setItem(NOTIFICATION_STATE_STORAGE_KEY, JSON.stringify(state));
+}
+
+export async function getSetupState(): Promise<SetupState> {
+  const state = await readJson<SetupState>(SETUP_STATE_STORAGE_KEY, {});
+  return typeof state === "object" && state ? state : {};
+}
+
+export async function saveSetupState(state: SetupState): Promise<void> {
+  await LocalStorage.setItem(SETUP_STATE_STORAGE_KEY, JSON.stringify(state));
+}
+
+export async function patchSetupState(patch: Partial<SetupState>): Promise<SetupState> {
+  const currentState = await getSetupState();
+  const nextState = { ...currentState, ...patch };
+  await saveSetupState(nextState);
+  return nextState;
 }

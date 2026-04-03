@@ -1,9 +1,14 @@
 import { LaunchType, environment, showHUD } from "@raycast/api";
 
 import { scanMemoryUsage } from "./monitor";
+import { patchSetupState } from "./storage";
 
 export default async function Command() {
   const { result, notifiedGroups } = await scanMemoryUsage({ notify: true, updateMetadata: true });
+  await patchSetupState({
+    lastScheduledCommandRunAt: result.scannedAt,
+    ...(environment.launchType === LaunchType.Background ? { lastBackgroundRefreshAt: result.scannedAt } : {}),
+  });
 
   if (environment.launchType === LaunchType.UserInitiated) {
     const message =

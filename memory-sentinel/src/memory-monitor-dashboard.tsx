@@ -6,17 +6,25 @@ import {
   confirmAlert,
   Form,
   Icon,
+  launchCommand,
+  LaunchType,
   List,
   openCommandPreferences,
   showHUD,
+  showToast,
+  Toast,
 } from "@raycast/api";
 import { randomUUID } from "node:crypto";
 import { useEffect, useMemo, useState } from "react";
 
 import { getMonitorPreferences } from "./preferences";
-import { formatBytes, getLastScanResult, scanMemoryUsage } from "./monitor";
-import { getRules, saveRules } from "./storage";
-import type { FlaggedProcessGroup, RuleMatchType, RuleMode, ScanResult, ThresholdRule } from "./types";
+import { formatBytes, getLastScanResult, scanMemoryUsage, sendTestNotification } from "./monitor";
+import { terminateProcessGroup } from "./processes";
+import { getRules, getSetupState, patchSetupState, saveRules } from "./storage";
+import type { FlaggedProcessGroup, ProcessGroup, RuleMatchType, RuleMode, ScanResult, SetupState, ThresholdRule } from "./types";
+
+const BACKGROUND_SCAN_INTERVAL_MINUTES = 5;
+const BACKGROUND_SCAN_STALE_MS = 20 * 60 * 1000;
 
 function formatRelativeTime(isoDate: string | undefined): string {
   if (!isoDate) {
@@ -48,6 +56,19 @@ function formatRelativeTime(isoDate: string | undefined): string {
   return `${differenceDays}d ago`;
 }
 
+function isOlderThan(isoDate: string | undefined, maxAgeMs: number): boolean {
+  if (!isoDate) {
+    return false;
+  }
+
+  const timestamp = Date.parse(isoDate);
+  if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+
+  return Date.now() - timestamp > maxAgeMs;
+}
+
 function ruleSubtitle(rule: ThresholdRule): string {
   if (rule.mode === "ignore") {
     return "Ignored during scans";
@@ -62,6 +83,10 @@ function sortRules(rules: ThresholdRule[]): ThresholdRule[] {
 
 function sortFlagged(flagged: FlaggedProcessGroup[]): FlaggedProcessGroup[] {
   return [...flagged].sort((left, right) => right.totalRssBytes - left.totalRssBytes);
+}
+
+function processIcon(group: ProcessGroup) {
+  return group.iconPath ? { fileIcon: group.iconPath } : Icon.AppWindowGrid3x3;
 }
 
 function RuleForm(props: {
@@ -110,7 +135,7 @@ function RuleForm(props: {
         </ActionPanel>
       }
     >
-      <Form.Description text="Create exact or partial matches for process names. Ignore rules silence alerts. Threshold rules replace the default 1 GB limit for matching processes." />
+      <Form.Description text="Create exact or partial matches for process names. Ignore rules silence alerts. Threshold rules replace the default limit for matching processes." />
       <Form.TextField
         id="pattern"
         title="Process Pattern"
@@ -150,13 +175,15 @@ export default function Command() {
   const [isScanning, setIsScanning] = useState(false);
   const [rules, setRules] = useState<ThresholdRule[]>([]);
   const [scanResult, setScanResult] = useState<ScanResult | undefined>();
+  const [setupState, setSetupState] = useState<SetupState>({});
 
   async function loadState() {
     setIsLoading(true);
     try {
-      const [storedRules, lastScan] = await Promise.all([getRules(), getLastScanResult()]);
+      const [storedRules, lastScan, storedSetupState] = await Promise.all([getRules(), getLastScanResult(), getSetupState()]);
       setRules(sortRules(storedRules));
       setScanResult(lastScan);
+      setSetupState(storedSetupState);
     } finally {
       setIsLoading(false);
     }
@@ -168,6 +195,11 @@ export default function Command() {
 
   const topGroups = useMemo(() => scanResult?.groups.slice(0, 12) ?? [], [scanResult]);
   const flaggedGroups = useMemo(() => sortFlagged(scanResult?.flagged ?? []), [scanResult]);
+  const backgroundMonitoringEnabled = Boolean(setupState.lastScheduledCommandRunAt);
+  const automaticBackgroundSeen = Boolean(setupState.lastBackgroundRefreshAt);
+  const backgroundScanLooksStale = isOlderThan(setupState.lastBackgroundRefreshAt, BACKGROUND_SCAN_STALE_MS);
+  const notificationsVerified = Boolean(setupState.lastNotificationTestAt);
+  const setupComplete = backgroundMonitoringEnabled && notificationsVerified;
 
   async function persistRules(nextRules: ThresholdRule[]) {
     await saveRules(nextRules);
@@ -179,6 +211,7 @@ export default function Command() {
     try {
       const { result, notifiedGroups } = await scanMemoryUsage({ notify: true, updateMetadata: false });
       setScanResult(result);
+      setSetupState(await patchSetupState({ lastDashboardScanAt: result.scannedAt }));
       const baseMessage =
         result.flagged.length > 0
           ? `${result.flagged.length} process${result.flagged.length === 1 ? "" : "es"} above their limit`
@@ -187,9 +220,73 @@ export default function Command() {
         notifiedGroups.length > 0
           ? ` - notified for ${notifiedGroups.length} process${notifiedGroups.length === 1 ? "" : "es"}`
           : "";
-      await showHUD(`${baseMessage}${notificationSuffix}`);
+      await showToast({
+        style: result.flagged.length > 0 ? Toast.Style.Failure : Toast.Style.Success,
+        title: baseMessage,
+        message: notificationSuffix ? notificationSuffix.slice(3) : undefined,
+      });
     } finally {
       setIsScanning(false);
+    }
+  }
+
+  async function handleEnableBackgroundMonitoring() {
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: "Starting scheduled scan",
+      message: "This enables Raycast's recurring background scan",
+    });
+
+    try {
+      await launchCommand({ name: "background-memory-scan", type: LaunchType.UserInitiated });
+      const now = new Date().toISOString();
+      setSetupState(await patchSetupState({ lastScheduledCommandRunAt: now }));
+      toast.style = Toast.Style.Success;
+      toast.title = "Background scans enabled";
+      toast.message = `Raycast should now run the scan about every ${BACKGROUND_SCAN_INTERVAL_MINUTES} minutes`;
+    } catch (error) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "Couldn't start the scheduled scan";
+      toast.message = error instanceof Error ? error.message : "Unknown error";
+    }
+  }
+
+  async function handleSendTestNotification() {
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: "Sending test notification",
+      message: "This uses the same macOS notification path as real alerts",
+    });
+
+    try {
+      await sendTestNotification();
+      const confirmed = await confirmAlert({
+      title: "Did the test alert appear?",
+      message: "If not, enable Raycast notifications in macOS System Settings and try again.",
+        primaryAction: {
+          title: "Yes, I Saw It",
+        },
+        dismissAction: {
+          title: "Not Yet",
+        },
+      });
+
+      if (!confirmed) {
+        toast.style = Toast.Style.Failure;
+        toast.title = "Notification not confirmed";
+        toast.message = "Enable Raycast notifications, then try again";
+        return;
+      }
+
+      const now = new Date().toISOString();
+      setSetupState(await patchSetupState({ lastNotificationTestAt: now }));
+      toast.style = Toast.Style.Success;
+      toast.title = "Notifications verified";
+      toast.message = "Future alerts will use the same macOS channel";
+    } catch (error) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "Couldn't send test notification";
+      toast.message = error instanceof Error ? error.message : "Unknown error";
     }
   }
 
@@ -223,9 +320,77 @@ export default function Command() {
     await showHUD("Rule deleted");
   }
 
+  async function handleTerminateProcessGroup(group: ProcessGroup) {
+    const confirmed = await confirmAlert({
+      title: group.processCount === 1 ? `Quit ${group.name}?` : `Quit ${group.name} processes?`,
+      message:
+        group.processCount === 1
+          ? `This will send SIGTERM to PID ${group.pids[0]}.`
+          : `This will send SIGTERM to ${group.processCount} processes (${group.pids.join(", ")}).`,
+      primaryAction: {
+        title: group.processCount === 1 ? "Quit Process" : "Quit Processes",
+        style: Alert.ActionStyle.Destructive,
+      },
+    });
+
+    if (!confirmed) {
+      return;
+    }
+
+    const { terminatedCount, failedPids } = await terminateProcessGroup(group);
+
+    if (terminatedCount === 0) {
+      throw new Error(
+        failedPids.length > 0 ? `Unable to quit ${group.name} (${failedPids.join(", ")})` : `Unable to quit ${group.name}`,
+      );
+    }
+
+    await loadState();
+
+    const suffix = failedPids.length > 0 ? `, ${failedPids.length} failed` : "";
+    await showHUD(
+      terminatedCount === 1 ? `Quit 1 ${group.name} process${suffix}` : `Quit ${terminatedCount} ${group.name} processes${suffix}`,
+    );
+  }
+
+  function processActions(group: ProcessGroup) {
+    return (
+      <ActionPanel>
+        <Action
+          title={group.processCount === 1 ? "Kill Process" : "Kill Processes"}
+          icon={Icon.Stop}
+          style={Action.Style.Destructive}
+          onAction={() => handleTerminateProcessGroup(group)}
+        />
+        <Action title="Run Scan Now" icon={Icon.ArrowClockwise} onAction={handleScanNow} />
+        <Action.Push
+          title="Ignore This Process"
+          icon={Icon.EyeDisabled}
+          target={<RuleForm suggestedPattern={group.name} onSave={handleSaveRule} initialMode="ignore" />}
+        />
+        <Action.Push
+          title="Set Custom Threshold"
+          icon={Icon.Gauge}
+          target={<RuleForm suggestedPattern={group.name} onSave={handleSaveRule} />}
+        />
+        <Action title="Open Extension Preferences" icon={Icon.Gear} onAction={openCommandPreferences} />
+      </ActionPanel>
+    );
+  }
+
   const commonActions = (
     <ActionPanel.Section>
       <Action title="Run Scan Now" icon={Icon.ArrowClockwise} onAction={handleScanNow} />
+      <Action
+        title={backgroundMonitoringEnabled ? "Run Scheduled Scan Again" : "Enable Background Monitoring"}
+        icon={Icon.Play}
+        onAction={handleEnableBackgroundMonitoring}
+      />
+      <Action
+        title={notificationsVerified ? "Send Another Test Notification" : "Verify Notifications"}
+        icon={Icon.Bell}
+        onAction={handleSendTestNotification}
+      />
       <Action.Push
         title="Add Threshold Rule"
         icon={Icon.PlusCircle}
@@ -251,13 +416,105 @@ export default function Command() {
         </ActionPanel>
       }
     >
+      {!setupComplete ? (
+        <List.Section title="Setup Checklist">
+          <List.Item
+            title={
+              !backgroundMonitoringEnabled
+                ? "Enable Background Monitoring"
+                : !automaticBackgroundSeen
+                  ? "Waiting for First Automatic Scan"
+                  : backgroundScanLooksStale
+                    ? "Automatic Scans Look Stale"
+                    : "Automatic Background Scans Active"
+            }
+            subtitle={
+              !backgroundMonitoringEnabled
+                ? "Run the scheduled command once to enable Raycast's 5-minute background scan."
+                : !automaticBackgroundSeen
+                  ? "Background scans are enabled. The first automatic run should happen soon."
+                  : backgroundScanLooksStale
+                    ? "No automatic background scan has been seen recently. Re-run setup if alerts stop."
+                    : "Raycast is running scans automatically."
+            }
+            icon={{
+              source: !backgroundMonitoringEnabled
+                ? Icon.Play
+                : !automaticBackgroundSeen || backgroundScanLooksStale
+                  ? Icon.ExclamationMark
+                  : Icon.CheckCircle,
+              tintColor: !backgroundMonitoringEnabled
+                ? Color.Orange
+                : !automaticBackgroundSeen || backgroundScanLooksStale
+                  ? Color.Yellow
+                  : Color.Green,
+            }}
+            accessories={[
+              { text: `Every ${BACKGROUND_SCAN_INTERVAL_MINUTES}m` },
+              {
+                tag: automaticBackgroundSeen
+                  ? `Auto ${formatRelativeTime(setupState.lastBackgroundRefreshAt)}`
+                  : backgroundMonitoringEnabled
+                    ? `Armed ${formatRelativeTime(setupState.lastScheduledCommandRunAt)}`
+                    : "Not armed",
+              },
+            ]}
+            actions={
+              <ActionPanel>
+                <Action
+                  title={backgroundMonitoringEnabled ? "Run Scheduled Scan Again" : "Enable Background Monitoring"}
+                  icon={Icon.Play}
+                  onAction={handleEnableBackgroundMonitoring}
+                />
+                {commonActions}
+              </ActionPanel>
+            }
+          />
+
+          <List.Item
+            title={notificationsVerified ? "Notifications Verified" : "Verify Notifications"}
+            subtitle={
+              notificationsVerified
+                ? "A test alert was confirmed. Future alerts use the same macOS notification path."
+                : "Send a test alert and confirm it appears."
+            }
+            icon={{
+              source: notificationsVerified ? Icon.CheckCircle : Icon.Bell,
+              tintColor: notificationsVerified ? Color.Green : Color.Orange,
+            }}
+            accessories={[
+              {
+                tag: notificationsVerified ? formatRelativeTime(setupState.lastNotificationTestAt) : "Needs test",
+              },
+            ]}
+            actions={
+              <ActionPanel>
+                <Action
+                  title={notificationsVerified ? "Send Another Test Notification" : "Verify Notifications"}
+                  icon={Icon.Bell}
+                  onAction={handleSendTestNotification}
+                />
+                {commonActions}
+              </ActionPanel>
+            }
+          />
+        </List.Section>
+      ) : null}
+
       <List.Section title="Overview">
         <List.Item
-          title="Memory Monitor"
+          title="Memory Sentinel"
           subtitle={`Default threshold: ${preferences.defaultThresholdGb} GB`}
           icon={{ source: Icon.MemoryChip, tintColor: Color.Blue }}
           accessories={[
             { text: `${preferences.notificationCooldownMinutes}m cooldown` },
+            {
+              text: automaticBackgroundSeen
+                ? `Auto ${formatRelativeTime(setupState.lastBackgroundRefreshAt)}`
+                : backgroundMonitoringEnabled
+                  ? "Awaiting first auto scan"
+                  : "Setup required",
+            },
             { tag: scanResult ? formatRelativeTime(scanResult.scannedAt) : "Never scanned" },
           ]}
           actions={
@@ -275,33 +532,19 @@ export default function Command() {
               key={group.key}
               title={group.name}
               subtitle={group.matchedRule ? `Rule: ${group.matchedRule.pattern}` : "Using default threshold"}
-              icon={{ source: Icon.ExclamationMark, tintColor: Color.Red }}
+              icon={processIcon(group)}
               accessories={[
+                { icon: { source: Icon.ExclamationMark, tintColor: Color.Red } },
                 { text: `${group.processCount} proc` },
                 { text: `${formatBytes(group.totalRssBytes)} / ${group.thresholdGb.toFixed(2)} GB` },
               ]}
-              actions={
-                <ActionPanel>
-                  <Action title="Run Scan Now" icon={Icon.ArrowClockwise} onAction={handleScanNow} />
-                  <Action.Push
-                    title="Ignore This Process"
-                    icon={Icon.EyeDisabled}
-                    target={<RuleForm suggestedPattern={group.name} onSave={handleSaveRule} initialMode="ignore" />}
-                  />
-                  <Action.Push
-                    title="Set Custom Threshold"
-                    icon={Icon.Gauge}
-                    target={<RuleForm suggestedPattern={group.name} onSave={handleSaveRule} />}
-                  />
-                  <Action title="Open Extension Preferences" icon={Icon.Gear} onAction={openCommandPreferences} />
-                </ActionPanel>
-              }
+              actions={processActions(group)}
             />
           ))
         ) : (
           <List.Item
             title="Nothing above the configured limits"
-            subtitle="Run a scan to refresh the list"
+            subtitle="Run a scan to refresh"
             icon={{ source: Icon.CheckCircle, tintColor: Color.Green }}
             actions={
               <ActionPanel>
@@ -318,24 +561,9 @@ export default function Command() {
             key={`top-${group.key}`}
             title={group.name}
             subtitle={`${group.processCount} process${group.processCount === 1 ? "" : "es"}`}
-            icon={Icon.AppWindowGrid3x3}
+            icon={processIcon(group)}
             accessories={[{ text: formatBytes(group.totalRssBytes) }]}
-            actions={
-              <ActionPanel>
-                <Action title="Run Scan Now" icon={Icon.ArrowClockwise} onAction={handleScanNow} />
-                <Action.Push
-                  title="Ignore This Process"
-                  icon={Icon.EyeDisabled}
-                  target={<RuleForm suggestedPattern={group.name} onSave={handleSaveRule} initialMode="ignore" />}
-                />
-                <Action.Push
-                  title="Set Custom Threshold"
-                  icon={Icon.Gauge}
-                  target={<RuleForm suggestedPattern={group.name} onSave={handleSaveRule} />}
-                />
-                <Action title="Open Extension Preferences" icon={Icon.Gear} onAction={openCommandPreferences} />
-              </ActionPanel>
-            }
+            actions={processActions(group)}
           />
         ))}
       </List.Section>
@@ -369,7 +597,7 @@ export default function Command() {
         ) : (
           <List.Item
             title="No custom rules yet"
-            subtitle="Create ignore rules or per-program thresholds"
+            subtitle="Create ignore rules or custom thresholds"
             icon={Icon.PlusCircle}
             actions={
               <ActionPanel>

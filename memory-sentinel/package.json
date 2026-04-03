@@ -11,14 +11,14 @@
   "commands": [
     {
       "name": "memory-monitor-dashboard",
-      "title": "Open Memory Monitor",
-      "description": "Review current memory usage, manage custom rules, and run scans manually.",
+      "title": "Open Memory Sentinel",
+      "description": "View memory usage, manage rules, and run scans.",
       "mode": "view"
     },
     {
       "name": "background-memory-scan",
       "title": "Run Memory Scan",
-      "description": "Periodically scans running processes and sends notifications for high memory usage.",
+      "description": "Scan running processes and send alerts for high memory usage.",
       "mode": "no-view",
       "interval": "5m"
     }
@@ -29,7 +29,7 @@
       "type": "textfield",
       "required": true,
       "title": "Default Threshold (GB)",
-      "description": "Notify when a process exceeds this amount of memory unless a rule overrides it.",
+      "description": "Alert when a process exceeds this limit unless a rule overrides it.",
       "default": "1"
     },
     {
@@ -37,7 +37,7 @@
       "type": "textfield",
       "required": true,
       "title": "Notification Cooldown (Minutes)",
-      "description": "Minimum time before notifying again about the same matching process.",
+      "description": "Minimum time before alerting again for the same process.",
       "default": "60"
     }
   ],

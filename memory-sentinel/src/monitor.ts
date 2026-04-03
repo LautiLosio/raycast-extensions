@@ -73,6 +73,21 @@ function buildNotificationKey(group: FlaggedProcessGroup): string {
   return `${group.key}:${Math.round(group.thresholdBytes)}`;
 }
 
+function escapeAppleScriptString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+async function showMacOSNotification(options: { title: string; subtitle: string; body: string }): Promise<void> {
+  const escapedTitle = escapeAppleScriptString(options.title);
+  const escapedSubtitle = escapeAppleScriptString(options.subtitle);
+  const escapedBody = escapeAppleScriptString(options.body);
+
+  await execFileAsync("/usr/bin/osascript", [
+    "-e",
+    `display notification "${escapedBody}" with title "${escapedTitle}" subtitle "${escapedSubtitle}"`,
+  ]);
+}
+
 async function sendSystemNotification(flaggedGroups: FlaggedProcessGroup[]): Promise<void> {
   if (flaggedGroups.length === 0) {
     return;
@@ -86,14 +101,8 @@ async function sendSystemNotification(flaggedGroups: FlaggedProcessGroup[]): Pro
     .slice(0, 3)
     .map((group) => `${group.name} (${formatBytes(group.totalRssBytes)})`)
     .join(", ");
-  const escapedTitle = title.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const escapedSubtitle = subtitle.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const escapedBody = body.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
-  await execFileAsync("/usr/bin/osascript", [
-    "-e",
-    `display notification "${escapedBody}" with title "${escapedTitle}" subtitle "${escapedSubtitle}"`,
-  ]);
+  await showMacOSNotification({ title, subtitle, body });
 }
 
 async function getGroupsToNotify(
@@ -176,3 +185,11 @@ export async function scanMemoryUsage(options?: { notify?: boolean; updateMetada
 
 export { formatBytes };
 export { getLastScanResult };
+
+export async function sendTestNotification(): Promise<void> {
+  await showMacOSNotification({
+    title: "Memory Sentinel",
+    subtitle: "Test notification",
+    body: "Background memory alerts will be delivered here.",
+  });
+}

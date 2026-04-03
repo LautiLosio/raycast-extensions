@@ -1,6 +1,6 @@
 # Memory Sentinel
 
-Raycast extension for macOS that scans running processes, alerts when one crosses a memory threshold, and lets you create custom per-program rules.
+Raycast extension for macOS that scans running processes, alerts when they cross a memory threshold, and lets you set simple per-app rules.
 
 ## What it does
 
@@ -28,6 +28,21 @@ The most specific matching rule wins. Exact matches beat partial matches, and lo
 
 - `Default Threshold (GB)`: global limit for every process without a custom rule
 - `Notification Cooldown (Minutes)`: minimum wait before alerting again for the same process group
+
+## First-time setup
+
+Open `Open Memory Sentinel` and complete the setup checklist:
+
+- `Enable Background Monitoring`: runs the scheduled `Run Memory Scan` command once so Raycast starts the recurring background scan.
+- `Verify Notifications`: sends a test macOS alert and asks you to confirm that it appeared.
+
+After setup, the dashboard shows whether:
+
+- the scheduled scan is enabled
+- Raycast has actually performed an automatic background run
+- alerts were verified successfully
+
+If automatic background scans stop appearing, the dashboard warns that setup may need attention.
 
 ## Development
 

@@ -8,9 +8,9 @@
 /* eslint-disable @typescript-eslint/ban-types */
 
 type ExtensionPreferences = {
-  /** Default Threshold (GB) - Notify when a process exceeds this amount of memory unless a rule overrides it. */
+  /** Default Threshold (GB) - Alert when a process exceeds this limit unless a rule overrides it. */
   "defaultThresholdGb": string,
-  /** Notification Cooldown (Minutes) - Minimum time before notifying again about the same matching process. */
+  /** Notification Cooldown (Minutes) - Minimum time before alerting again for the same process. */
   "notificationCooldownMinutes": string
 }
 

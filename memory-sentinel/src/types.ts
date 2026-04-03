@@ -26,6 +26,7 @@ export interface ProcessGroup {
   processCount: number;
   pids: number[];
   executablePaths: string[];
+  iconPath?: string;
 }
 
 export interface FlaggedProcessGroup extends ProcessGroup {
@@ -44,4 +45,11 @@ export interface ScanResult {
 
 export interface NotificationState {
   [key: string]: string;
+}
+
+export interface SetupState {
+  lastDashboardScanAt?: string;
+  lastScheduledCommandRunAt?: string;
+  lastBackgroundRefreshAt?: string;
+  lastNotificationTestAt?: string;
 }
