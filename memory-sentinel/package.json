@@ -1,0 +1,58 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "memory-sentinel",
+  "title": "Memory Sentinel",
+  "description": "Monitor process memory usage and send alerts when apps cross configured thresholds.",
+  "icon": "assets/icon.png",
+  "author": "naranjax",
+  "platforms": ["macOS"],
+  "categories": ["Productivity", "System"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "memory-monitor-dashboard",
+      "title": "Open Memory Monitor",
+      "description": "Review current memory usage, manage custom rules, and run scans manually.",
+      "mode": "view"
+    },
+    {
+      "name": "background-memory-scan",
+      "title": "Run Memory Scan",
+      "description": "Periodically scans running processes and sends notifications for high memory usage.",
+      "mode": "no-view",
+      "interval": "5m"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "defaultThresholdGb",
+      "type": "textfield",
+      "required": true,
+      "title": "Default Threshold (GB)",
+      "description": "Notify when a process exceeds this amount of memory unless a rule overrides it.",
+      "default": "1"
+    },
+    {
+      "name": "notificationCooldownMinutes",
+      "type": "textfield",
+      "required": true,
+      "title": "Notification Cooldown (Minutes)",
+      "description": "Minimum time before notifying again about the same matching process.",
+      "default": "60"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "1.104.11",
+    "react": "19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.10",
+    "@types/react": "19.0.10",
+    "typescript": "6.0.2"
+  },
+  "scripts": {
+    "build": "ray build",
+    "dev": "ray develop",
+    "lint": "tsc --noEmit"
+  }
+}
