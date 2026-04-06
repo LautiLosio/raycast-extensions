@@ -8,6 +8,7 @@ import { getLastScanResult, getNotificationState, getRules, saveLastScanResult, 
 import type { FlaggedProcessGroup, NotificationState, ProcessGroup, ScanResult, ThresholdRule } from "./types";
 
 const execFileAsync = promisify(execFile);
+const STORED_GROUP_LIMIT = 12;
 
 function compareRules(left: ThresholdRule, right: ThresholdRule): number {
   const leftExact = left.matchType === "exact" ? 1 : 0;
@@ -110,12 +111,17 @@ async function getGroupsToNotify(
   cooldownMs: number,
 ): Promise<{ groupsToNotify: FlaggedProcessGroup[]; nextState: NotificationState }> {
   const notificationState = await getNotificationState();
-  const nextState = { ...notificationState };
   const now = Date.now();
+  const nextState = Object.fromEntries(
+    Object.entries(notificationState).filter(([, lastNotifiedAt]) => {
+      const timestamp = Date.parse(lastNotifiedAt);
+      return Number.isFinite(timestamp) && now - timestamp < cooldownMs;
+    }),
+  );
 
   const groupsToNotify = flaggedGroups.filter((group) => {
     const key = buildNotificationKey(group);
-    const lastNotification = notificationState[key] ? Date.parse(notificationState[key]) : Number.NaN;
+    const lastNotification = nextState[key] ? Date.parse(nextState[key]) : Number.NaN;
     const shouldNotify = !Number.isFinite(lastNotification) || now - lastNotification >= cooldownMs;
 
     if (shouldNotify) {
@@ -157,7 +163,8 @@ export async function scanMemoryUsage(options?: { notify?: boolean; updateMetada
     scannedAt: new Date().toISOString(),
     defaultThresholdGb: preferences.defaultThresholdGb,
     cooldownMinutes: preferences.notificationCooldownMinutes,
-    groups,
+    // Keep the stored snapshot small; the dashboard only renders the top groups.
+    groups: groups.slice(0, STORED_GROUP_LIMIT),
     flagged,
   };
 
@@ -170,8 +177,9 @@ export async function scanMemoryUsage(options?: { notify?: boolean; updateMetada
 
     if (notifiedGroups.length > 0) {
       await sendSystemNotification(notifiedGroups);
-      await saveNotificationState(notificationDecision.nextState);
     }
+
+    await saveNotificationState(notificationDecision.nextState);
   }
 
   if (options?.updateMetadata) {

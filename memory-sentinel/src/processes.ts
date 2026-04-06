@@ -1,22 +1,41 @@
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import type { ProcessEntry, ProcessGroup } from "./types";
 
 const execFileAsync = promisify(execFile);
+const iconPathCache = new Map<string, string | null>();
 
 function toProcessName(executablePath: string): string {
   const baseName = path.basename(executablePath.trim());
   return baseName || executablePath.trim();
 }
 
-function resolveIconPath(executablePaths: string[]): string | undefined {
+async function pathExists(candidatePath: string): Promise<boolean> {
+  try {
+    await fs.access(candidatePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveIconPath(executablePaths: string[]): Promise<string | undefined> {
   for (const executablePath of executablePaths) {
     const trimmedPath = executablePath.trim();
     if (!trimmedPath) {
+      continue;
+    }
+
+    const cachedPath = iconPathCache.get(trimmedPath);
+    if (cachedPath !== undefined) {
+      if (cachedPath) {
+        return cachedPath;
+      }
+
       continue;
     }
 
@@ -25,14 +44,18 @@ function resolveIconPath(executablePaths: string[]): string | undefined {
 
     for (let index = segments.length; index > 0; index -= 1) {
       const candidate = `${path.sep}${segments.slice(0, index).join(path.sep)}`;
-      if (candidate.endsWith(".app") && fs.existsSync(candidate)) {
+      if (candidate.endsWith(".app") && (await pathExists(candidate))) {
+        iconPathCache.set(trimmedPath, candidate);
         return candidate;
       }
     }
 
-    if (fs.existsSync(currentPath)) {
+    if (await pathExists(currentPath)) {
+      iconPathCache.set(trimmedPath, currentPath);
       return currentPath;
     }
+
+    iconPathCache.set(trimmedPath, null);
   }
 
   return undefined;
@@ -94,10 +117,17 @@ export async function getRunningProcessGroups(): Promise<ProcessGroup[]> {
         processCount: entries.length,
         pids: entries.map((entry) => entry.pid).sort((left, right) => left - right),
         executablePaths,
-        iconPath: resolveIconPath(executablePaths),
       };
     })
     .sort((left, right) => right.totalRssBytes - left.totalRssBytes);
+}
+
+export async function resolveProcessGroupIcon(group: ProcessGroup): Promise<string | undefined> {
+  if (group.iconPath) {
+    return group.iconPath;
+  }
+
+  return resolveIconPath(group.executablePaths);
 }
 
 export async function terminateProcessGroup(group: ProcessGroup): Promise<{ terminatedCount: number; failedPids: number[] }> {

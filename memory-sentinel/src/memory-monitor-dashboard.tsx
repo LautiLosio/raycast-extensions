@@ -6,6 +6,7 @@ import {
   confirmAlert,
   Form,
   Icon,
+  Keyboard,
   launchCommand,
   LaunchType,
   List,
@@ -19,7 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getMonitorPreferences } from "./preferences";
 import { formatBytes, getLastScanResult, scanMemoryUsage, sendTestNotification } from "./monitor";
-import { terminateProcessGroup } from "./processes";
+import { resolveProcessGroupIcon, terminateProcessGroup } from "./processes";
 import { getRules, getSetupState, patchSetupState, saveRules } from "./storage";
 import type { FlaggedProcessGroup, ProcessGroup, RuleMatchType, RuleMode, ScanResult, SetupState, ThresholdRule } from "./types";
 
@@ -85,8 +86,9 @@ function sortFlagged(flagged: FlaggedProcessGroup[]): FlaggedProcessGroup[] {
   return [...flagged].sort((left, right) => right.totalRssBytes - left.totalRssBytes);
 }
 
-function processIcon(group: ProcessGroup) {
-  return group.iconPath ? { fileIcon: group.iconPath } : Icon.AppWindowGrid3x3;
+function processIcon(group: ProcessGroup, iconPath: string | undefined) {
+  const resolvedIconPath = iconPath ?? group.iconPath;
+  return resolvedIconPath ? { fileIcon: resolvedIconPath } : Icon.AppWindowGrid3x3;
 }
 
 function RuleForm(props: {
@@ -176,6 +178,7 @@ export default function Command() {
   const [rules, setRules] = useState<ThresholdRule[]>([]);
   const [scanResult, setScanResult] = useState<ScanResult | undefined>();
   const [setupState, setSetupState] = useState<SetupState>({});
+  const [resolvedIcons, setResolvedIcons] = useState<Record<string, string>>({});
 
   async function loadState() {
     setIsLoading(true);
@@ -195,11 +198,49 @@ export default function Command() {
 
   const topGroups = useMemo(() => scanResult?.groups.slice(0, 12) ?? [], [scanResult]);
   const flaggedGroups = useMemo(() => sortFlagged(scanResult?.flagged ?? []), [scanResult]);
+  const visibleGroups = useMemo(() => {
+    const groupsByKey = new Map<string, ProcessGroup>();
+    for (const group of flaggedGroups) {
+      groupsByKey.set(group.key, group);
+    }
+    for (const group of topGroups) {
+      groupsByKey.set(group.key, group);
+    }
+
+    return Array.from(groupsByKey.values());
+  }, [flaggedGroups, topGroups]);
   const backgroundMonitoringEnabled = Boolean(setupState.lastScheduledCommandRunAt);
   const automaticBackgroundSeen = Boolean(setupState.lastBackgroundRefreshAt);
   const backgroundScanLooksStale = isOlderThan(setupState.lastBackgroundRefreshAt, BACKGROUND_SCAN_STALE_MS);
   const notificationsVerified = Boolean(setupState.lastNotificationTestAt);
   const setupComplete = backgroundMonitoringEnabled && notificationsVerified;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadIcons() {
+      const entries = await Promise.all(
+        visibleGroups.map(async (group) => {
+          const iconPath = await resolveProcessGroupIcon(group);
+          return [group.key, iconPath] as const;
+        }),
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      setResolvedIcons(
+        Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))),
+      );
+    }
+
+    void loadIcons();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visibleGroups]);
 
   async function persistRules(nextRules: ThresholdRule[]) {
     await saveRules(nextRules);
@@ -532,7 +573,7 @@ export default function Command() {
               key={group.key}
               title={group.name}
               subtitle={group.matchedRule ? `Rule: ${group.matchedRule.pattern}` : "Using default threshold"}
-              icon={processIcon(group)}
+              icon={processIcon(group, resolvedIcons[group.key])}
               accessories={[
                 { icon: { source: Icon.ExclamationMark, tintColor: Color.Red } },
                 { text: `${group.processCount} proc` },
@@ -561,7 +602,7 @@ export default function Command() {
             key={`top-${group.key}`}
             title={group.name}
             subtitle={`${group.processCount} process${group.processCount === 1 ? "" : "es"}`}
-            icon={processIcon(group)}
+            icon={processIcon(group, resolvedIcons[group.key])}
             accessories={[{ text: formatBytes(group.totalRssBytes) }]}
             actions={processActions(group)}
           />
@@ -587,7 +628,13 @@ export default function Command() {
               actions={
                 <ActionPanel>
                   <Action.Push title="Edit Rule" icon={Icon.Pencil} target={<RuleForm existingRule={rule} onSave={handleSaveRule} />} />
-                  <Action title="Delete Rule" icon={Icon.Trash} style={Action.Style.Destructive} onAction={() => handleDeleteRule(rule.id)} />
+                  <Action
+                    title="Delete Rule"
+                    icon={Icon.Trash}
+                    style={Action.Style.Destructive}
+                    shortcut={{ modifiers: ["ctrl"], key: "x" }}
+                    onAction={() => handleDeleteRule(rule.id)}
+                  />
                   <Action title="Run Scan Now" icon={Icon.ArrowClockwise} onAction={handleScanNow} />
                   <Action title="Open Extension Preferences" icon={Icon.Gear} onAction={openCommandPreferences} />
                 </ActionPanel>
